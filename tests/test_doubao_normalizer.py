@@ -61,6 +61,13 @@ def test_resize_returns_png_bytes():
     assert out[:4] == b"\x89PNG"
 
 
+def test_resize_returns_bytes_unchanged_when_unrecognised():
+    """Non-image bytes pass through unchanged so downstream callers can
+    decide what to do (e.g. surface a 4xx from Ark)."""
+    garbage = b"not an image at all"
+    assert _resize_if_needed(garbage) == garbage
+
+
 def _make_status_error(status: int, code: str | None = None) -> APIStatusError:
     """Build an APIStatusError suitable for testing _classify_error."""
     fake_request = httpx.Request("POST", "https://example.com/v1/chat/completions")
