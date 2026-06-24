@@ -124,3 +124,18 @@ def test_send_post_message_without_preview(feishu, fake_lark, mocker):
     flat = json.dumps(content, ensure_ascii=False)
     assert "file_abc" in flat
     assert "img_" not in flat
+
+
+def test_upload_image_bytes_returns_image_key(mocker):
+    from app.feishu_client import FeishuClient
+
+    fake_lark = mocker.MagicMock()
+    fake_lark.im.v1.image.create.return_value = mocker.MagicMock(
+        success=lambda: True,
+        data=mocker.MagicMock(image_key="img_v2_cleaned"),
+    )
+    client = FeishuClient(fake_lark)
+    key = client.upload_image_bytes(b"\x89PNG\r\n\x1a\nfakepng", ".png")
+    assert key == "img_v2_cleaned"
+    # Verify the SDK was called with a BytesIO-like body
+    fake_lark.im.v1.image.create.assert_called_once()

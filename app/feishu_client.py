@@ -15,6 +15,7 @@ SDK reference (lark-oapi >= 1.2):
 
 from __future__ import annotations
 
+import io
 import json
 from pathlib import Path
 
@@ -84,6 +85,25 @@ class FeishuClient:
             resp = self._client.im.v1.image.create(req)
         if not resp.success() or resp.data is None:
             raise FeishuAPIError(f"upload_image failed: code={resp.code} msg={resp.msg}")
+        return resp.data.image_key
+
+    def upload_image_bytes(self, data: bytes, suffix: str) -> str:
+        """Upload raw image bytes (e.g. cleaned PNG from Doubao) without
+        requiring a path on disk. Returns the image_key."""
+        if not suffix.startswith("."):
+            raise ValueError(f"suffix must start with '.', got {suffix!r}")
+        body = (
+            CreateImageRequestBody.builder()
+            .image_type("message")
+            .image(io.BytesIO(data))
+            .build()
+        )
+        req = CreateImageRequest.builder().request_body(body).build()
+        resp = self._client.im.v1.image.create(req)
+        if not resp.success() or resp.data is None:
+            raise FeishuAPIError(
+                f"upload_image_bytes failed: code={resp.code} msg={resp.msg}"
+            )
         return resp.data.image_key
 
     # --- messaging ---
