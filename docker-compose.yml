@@ -1,0 +1,22 @@
+services:
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        # Pin to a specific commit/tag for reproducible builds.
+        # Default is the main branch.
+        ITD_REF: main
+    image: feishu-laser-dxf-bot:0.1.0
+    container_name: feishu-laser-dxf-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
