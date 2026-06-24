@@ -540,23 +540,23 @@ git commit -m "feat(doubao): add _resize_if_needed with Pillow downscale"
 Append to `tests/test_doubao_normalizer.py`:
 
 ```python
+import httpx
 from openai import APIConnectionError, APIStatusError
 
 from app.doubao_normalizer import _classify_error
 
 
 def _make_status_error(status: int, code: str | None = None) -> APIStatusError:
-    """Build an APIStatusError suitable for testing _classify_error."""
-    fake_response = type("R", (), {"status_code": status, "headers": {}})()
-    err = APIStatusError(
-        message="boom",
-        request_id="req_1",
-        body=None,
-    )
-    err.status_code = status
-    if code is not None:
-        err.code = code
-    return err
+    """Build an APIStatusError suitable for testing _classify_error.
+
+    openai >= 2.0 changed the APIStatusError constructor to require a real
+    httpx.Response and a body dict. We construct both here so the SDK can
+    extract `status_code` from the response and `code` from the body.
+    """
+    fake_request = httpx.Request("POST", "https://example.com/v1/images/generations")
+    fake_response = httpx.Response(status_code=status, headers={}, request=fake_request)
+    body = {"code": code} if code is not None else None
+    return APIStatusError(message="boom", response=fake_response, body=body)
 
 
 def test_classify_connection_error_is_retryable():
