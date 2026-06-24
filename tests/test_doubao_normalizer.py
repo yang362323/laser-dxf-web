@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import base64
 import io
-from unittest.mock import MagicMock
+import time
+from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
@@ -17,6 +18,7 @@ from app.doubao_normalizer import (
     _call_once,
     _classify_error,
     _resize_if_needed,
+    run as doubao_run,
 )
 
 MAX_LONG_EDGE = 2048
@@ -173,3 +175,196 @@ def test_call_once_raises_on_garbage_b64():
             client=client, model="m", prompt="p", image_bytes=b"x"
         )
     assert "返回数据异常" in exc_info.value.user_msg
+
+
+# --- run() orchestrator ---------------------------------------------------
+
+
+def _valid_png_b64() -> str:
+    return base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"x" * 16).decode()
+
+
+def _ok_response() -> MagicMock:
+    resp = MagicMock()
+    resp.data = [MagicMock(b64_json=_valid_png_b64(), url=None)]
+    return resp
+
+
+# --- happy path ----------------------------------------------------------
+
+
+def test_run_happy_path_writes_file_and_returns_bytes(tmp_path):
+    client = MagicMock(spec=OpenAI)
+    client.images.generate.return_value = _ok_response()
+    with patch("app.doubao_normalizer.time.sleep"):  # never sleep on success
+        result = doubao_run(
+            image_bytes=b"orig",
+            prompt="p",
+            work_dir=tmp_path,
+            api_key="ark-x",
+            model="m",
+            client=client,
+        )
+    assert isinstance(result, NormalizedImage)
+    assert result.cleaned_bytes.startswith(b"\x89PNG")
+    assert result.cleaned_path.exists()
+    assert result.cleaned_path.read_bytes() == result.cleaned_bytes
+    # Exactly one SDK call, no sleep
+    assert client.images.generate.call_count == 1
+
+
+# --- resize --------------------------------------------------------------
+
+
+def test_run_resizes_input_before_calling_sdk(tmp_path):
+    big = _make_png_bytes(5000, 3000)
+    client = MagicMock(spec=OpenAI)
+    client.images.generate.return_value = _ok_response()
+
+    doubao_run(
+        image_bytes=big,
+        prompt="p",
+        work_dir=tmp_path,
+        api_key="ark-x",
+        model="m",
+        client=client,
+    )
+    # The bytes sent to Ark should be a resized PNG, <= 2048 on long edge
+    kwargs = client.images.generate.call_args.kwargs
+    sent = kwargs["image"][0]
+    payload = base64.b64decode(sent.split(",", 1)[1])
+    img = Image.open(io.BytesIO(payload))
+    assert max(img.size) <= 2048
+
+
+def test_run_does_not_resize_when_under_limit(tmp_path):
+    small = _make_png_bytes(1000, 1000)
+    client = MagicMock(spec=OpenAI)
+    client.images.generate.return_value = _ok_response()
+
+    doubao_run(
+        image_bytes=small,
+        prompt="p",
+        work_dir=tmp_path,
+        api_key="ark-x",
+        model="m",
+        client=client,
+    )
+    kwargs = client.images.generate.call_args.kwargs
+    sent = kwargs["image"][0]
+    payload = base64.b64decode(sent.split(",", 1)[1])
+    assert payload == small  # bytes unchanged
+
+
+# --- retry semantics -----------------------------------------------------
+
+
+def test_run_retries_once_on_connection_error_then_succeeds(tmp_path):
+    client = MagicMock(spec=OpenAI)
+    client.images.generate.side_effect = [
+        APIConnectionError(request=None),
+        _ok_response(),
+    ]
+    with patch("app.doubao_normalizer.time.sleep") as mock_sleep:
+        result = doubao_run(
+            image_bytes=b"x", prompt="p", work_dir=tmp_path,
+            api_key="k", model="m", client=client,
+        )
+    assert isinstance(result, NormalizedImage)
+    assert client.images.generate.call_count == 2
+    mock_sleep.assert_called_once_with(1.0)
+
+
+def test_run_connection_error_two_strikes_raises(tmp_path):
+    client = MagicMock(spec=OpenAI)
+    client.images.generate.side_effect = [
+        APIConnectionError(request=None),
+        APIConnectionError(request=None),
+    ]
+    with patch("app.doubao_normalizer.time.sleep"):
+        with pytest.raises(DoubaoAPIError) as exc_info:
+            doubao_run(
+                image_bytes=b"x", prompt="p", work_dir=tmp_path,
+                api_key="k", model="m", client=client,
+            )
+    assert "网络" in exc_info.value.user_msg
+    assert client.images.generate.call_count == 2
+
+
+def test_run_4xx_no_retry_raises(tmp_path):
+    client = MagicMock(spec=OpenAI)
+    client.images.generate.side_effect = _make_status_error(400)
+    with pytest.raises(DoubaoAPIError) as exc_info:
+        doubao_run(
+            image_bytes=b"x", prompt="p", work_dir=tmp_path,
+            api_key="k", model="m", client=client,
+        )
+    assert client.images.generate.call_count == 1
+    assert exc_info.value.user_msg == "请求被拒绝"
+
+
+def test_run_audit_reject_no_retry_raises(tmp_path):
+    client = MagicMock(spec=OpenAI)
+    client.images.generate.side_effect = _make_status_error(400, "AuditReject")
+    with pytest.raises(DoubaoAPIError) as exc_info:
+        doubao_run(
+            image_bytes=b"x", prompt="p", work_dir=tmp_path,
+            api_key="k", model="m", client=client,
+        )
+    assert client.images.generate.call_count == 1
+    assert "拒绝" in exc_info.value.user_msg
+
+
+def test_run_arrearage_no_retry_raises(tmp_path):
+    client = MagicMock(spec=OpenAI)
+    client.images.generate.side_effect = _make_status_error(401, "Arrearage")
+    with pytest.raises(DoubaoAPIError) as exc_info:
+        doubao_run(
+            image_bytes=b"x", prompt="p", work_dir=tmp_path,
+            api_key="k", model="m", client=client,
+        )
+    assert "欠费" in exc_info.value.user_msg
+
+
+def test_run_5xx_retries_once_then_succeeds(tmp_path):
+    client = MagicMock(spec=OpenAI)
+    client.images.generate.side_effect = [
+        _make_status_error(500),
+        _ok_response(),
+    ]
+    with patch("app.doubao_normalizer.time.sleep"):
+        result = doubao_run(
+            image_bytes=b"x", prompt="p", work_dir=tmp_path,
+            api_key="k", model="m", client=client,
+        )
+    assert isinstance(result, NormalizedImage)
+    assert client.images.generate.call_count == 2
+
+
+def test_run_5xx_two_strikes_raises(tmp_path):
+    client = MagicMock(spec=OpenAI)
+    client.images.generate.side_effect = [
+        _make_status_error(500),
+        _make_status_error(500),
+    ]
+    with patch("app.doubao_normalizer.time.sleep"):
+        with pytest.raises(DoubaoAPIError) as exc_info:
+            doubao_run(
+                image_bytes=b"x", prompt="p", work_dir=tmp_path,
+                api_key="k", model="m", client=client,
+            )
+    assert "服务" in exc_info.value.user_msg
+    assert client.images.generate.call_count == 2
+
+
+def test_run_401_403_no_retry_raises(tmp_path):
+    for s in (401, 403):
+        client = MagicMock(spec=OpenAI)
+        client.images.generate.side_effect = _make_status_error(s)
+        with pytest.raises(DoubaoAPIError) as exc_info:
+            doubao_run(
+                image_bytes=b"x", prompt="p", work_dir=tmp_path,
+                api_key="k", model="m", client=client,
+            )
+        assert client.images.generate.call_count == 1
+        assert "鉴权" in exc_info.value.user_msg

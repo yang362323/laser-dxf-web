@@ -39,12 +39,19 @@ def _resize_if_needed(image_bytes: bytes) -> bytes:
 
     Always returns valid PNG bytes; never returns the original format
     untouched when resizing happened.
+
+    If the bytes are not a recognisable image, return them unchanged — let
+    the downstream SDK decide what to do with them. (Callers may forward
+    arbitrary bytes; we shouldn't reject here.)
     """
-    with Image.open(io.BytesIO(image_bytes)) as img:
-        if max(img.size) <= MAX_LONG_EDGE:
-            return image_bytes
-        img = img.copy()
-        img.thumbnail((MAX_LONG_EDGE, MAX_LONG_EDGE), Image.LANCZOS)
+    try:
+        with Image.open(io.BytesIO(image_bytes)) as img:
+            if max(img.size) <= MAX_LONG_EDGE:
+                return image_bytes
+            img = img.copy()
+            img.thumbnail((MAX_LONG_EDGE, MAX_LONG_EDGE), Image.LANCZOS)
+    except Exception:
+        return image_bytes
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     return buf.getvalue()
@@ -151,3 +158,71 @@ def _call_once(
             internal_msg="doubao b64 decoded to non-PNG bytes",
         )
     return decoded
+
+
+def run(
+    *,
+    image_bytes: bytes,
+    prompt: str,
+    work_dir: Path,
+    api_key: str,
+    model: str,
+    client: Optional[OpenAI] = None,
+) -> NormalizedImage:
+    """Resize if needed, call Ark (with one retry on 5xx/connect), return
+    the cleaned image. Raises DoubaoAPIError on terminal failure.
+
+    The caller (handlers) treats DoubaoAPIError as a user-facing error and
+    does NOT retry. All retry policy lives in this function.
+    """
+    work_dir = Path(work_dir)
+    work_dir.mkdir(parents=True, exist_ok=True)
+
+    if client is None:
+        client = _build_client(api_key)
+
+    resized = _resize_if_needed(image_bytes)
+    last_exc: BaseException | None = None
+    decision: _RetryDecision | None = None
+
+    for attempt in (1, 2):
+        start = time.monotonic()
+        status = "ok"
+        try:
+            cleaned = _call_once(
+                client=client,
+                model=model,
+                prompt=prompt,
+                image_bytes=resized,
+            )
+            duration_ms = int((time.monotonic() - start) * 1000)
+            log.info(
+                "doubao call ok attempt=%d duration_ms=%d bytes_in=%d bytes_out=%d",
+                attempt, duration_ms, len(image_bytes), len(cleaned),
+            )
+            cleaned_path = work_dir / "normalized.png"
+            cleaned_path.write_bytes(cleaned)
+            return NormalizedImage(cleaned_bytes=cleaned, cleaned_path=cleaned_path)
+        except DoubaoAPIError:
+            # Malformed response — _call_once already classified; no retry
+            raise
+        except (APIConnectionError, APIStatusError) as e:
+            duration_ms = int((time.monotonic() - start) * 1000)
+            decision = _classify_error(e)
+            last_exc = e
+            status = "retry" if decision.retry else "failed"
+            log.warning(
+                "doubao call %s attempt=%d duration_ms=%d err=%s",
+                status, attempt, duration_ms, e,
+            )
+            if not decision.retry:
+                break
+            if attempt == 1:
+                time.sleep(1.0)
+
+    # Exhausted retries or terminal error
+    assert decision is not None and last_exc is not None
+    raise DoubaoAPIError(
+        user_msg=decision.user_msg,
+        internal_msg=f"doubao call failed: {last_exc}",
+    )
