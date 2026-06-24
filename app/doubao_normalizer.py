@@ -16,7 +16,7 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 
-class DoubaoAPIError(Exception):
+class DoubaoAPIError(RuntimeError):
     """Terminal failure from Doubao. Carries a user-facing Chinese message
     distinct from the internal one (which may include raw SDK details)."""
 
