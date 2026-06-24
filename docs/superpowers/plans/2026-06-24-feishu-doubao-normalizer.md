@@ -448,9 +448,10 @@ def test_resize_scales_down_when_over_limit():
     original = _make_png_bytes(5000, 3000)
     out = _resize_if_needed(original)
     img = Image.open(io.BytesIO(out))
+    # Long edge must be at the cap; aspect ratio must be preserved.
+    # Pillow's thumbnail() rounds rather than floors, so 5000x3000 -> 2048x1229.
     assert max(img.size) == MAX_LONG_EDGE
-    # Aspect ratio preserved: 5000x3000 -> 2048x1228 (floor of 3000*2048/5000)
-    assert img.size == (2048, 1228)
+    assert img.size == (2048, 1229)
 
 
 def test_resize_returns_png_bytes():

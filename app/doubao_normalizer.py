@@ -9,11 +9,45 @@ Has no knowledge of Feishu. The retry policy lives here, not in handlers.
 
 from __future__ import annotations
 
+import base64
+import io
 import logging
+import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Optional
+
+import httpx
+from openai import (
+    APIConnectionError,
+    APIStatusError,
+    OpenAI,
+)
+from PIL import Image
 
 log = logging.getLogger(__name__)
+
+
+#: Long-edge cap for images sent to Ark. Conservative default that keeps
+#: cost low and stays well under the documented per-image size limit.
+MAX_LONG_EDGE = 2048
+
+
+def _resize_if_needed(image_bytes: bytes) -> bytes:
+    """If the image's long edge exceeds MAX_LONG_EDGE, downscale and re-encode
+    as PNG. Otherwise return the bytes unchanged.
+
+    Always returns valid PNG bytes; never returns the original format
+    untouched when resizing happened.
+    """
+    with Image.open(io.BytesIO(image_bytes)) as img:
+        if max(img.size) <= MAX_LONG_EDGE:
+            return image_bytes
+        img = img.copy()
+        img.thumbnail((MAX_LONG_EDGE, MAX_LONG_EDGE), Image.LANCZOS)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
 
 
 class DoubaoAPIError(RuntimeError):
