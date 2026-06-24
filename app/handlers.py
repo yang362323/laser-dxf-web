@@ -14,7 +14,9 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import converter, preview
+from . import converter, doubao_normalizer, doubao_prompt, preview
+from .config import Config
+from .doubao_normalizer import DoubaoAPIError
 from .feishu_client import FeishuAPIError, FeishuClient
 
 
@@ -62,16 +64,21 @@ def handle_dxf_request(
     parsed: ParsedSlashCommand,
     feishu: FeishuClient,
     work_dir: Path,
+    settings: Config,
 ) -> None:
     """Handle one ``/dxf`` slash command.
 
     Steps:
         1. Reply "正在处理..."
         2. Download image bytes
-        3. Convert to DXF (creates work_dir / input.* and out.dxf)
-        4. Render preview PNG
-        5. Upload DXF, upload preview
-        6. Send single post message with summary + preview + DXF
+        3. Normalize via Doubao (with internal retry, raises DoubaoAPIError
+           on terminal failure)
+        4. Reply "正在转换 DXF..."
+        5. Upload cleaned image
+        6. Convert to DXF (creates work_dir / input.png and out.dxf)
+        7. Render preview PNG
+        8. Upload DXF, upload preview
+        9. Send single post message with [cleaned image, preview, DXF]
     Errors at any step reply with a short Chinese message; nothing raises
     out of this function.
     """
@@ -85,10 +92,34 @@ def handle_dxf_request(
             feishu.reply_text(parsed.message_id, "图片下载失败,请重试")
             return
 
+        feishu.reply_text(parsed.message_id, "正在清理图片...")
+        try:
+            normalized = doubao_normalizer.run(
+                image_bytes=image_bytes,
+                prompt=doubao_prompt.DEFAULT_PROMPT,
+                work_dir=work_dir,
+                api_key=settings.ark_api_key,
+                model=settings.ark_model,
+            )
+        except DoubaoAPIError as e:
+            feishu.reply_text(
+                parsed.message_id, f"AI 标准化失败: {e.user_msg}，请重试"
+            )
+            return
+
+        feishu.reply_text(parsed.message_id, "正在转换 DXF...")
+        try:
+            cleaned_key = feishu.upload_image_bytes(
+                normalized.cleaned_bytes, ".png"
+            )
+        except FeishuAPIError:
+            feishu.reply_text(parsed.message_id, "清理后图片上传失败,请重试")
+            return
+
         try:
             conv = converter.run(
-                image_bytes=image_bytes,
-                image_suffix=".jpg",
+                image_bytes=normalized.cleaned_bytes,
+                image_suffix=".png",
                 out_dxf_path=work_dir / "output.dxf",
                 work_dir=work_dir,
             )
@@ -116,7 +147,7 @@ def handle_dxf_request(
                 receive_id=parsed.chat_id,
                 receive_id_type=parsed.receive_id_type,
                 text=summary,
-                image_key=preview_key,
+                image_keys=[cleaned_key, preview_key] if preview_key else [cleaned_key],
                 file_key=file_key,
             )
         except FeishuAPIError:
