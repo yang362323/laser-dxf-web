@@ -37,12 +37,12 @@ def _resize_if_needed(image_bytes: bytes) -> bytes:
     """If the image's long edge exceeds MAX_LONG_EDGE, downscale and re-encode
     as PNG. Otherwise return the bytes unchanged.
 
-    Always returns valid PNG bytes; never returns the original format
-    untouched when resizing happened.
+    Always returns valid PNG bytes when resizing happened.
 
-    If the bytes are not a recognisable image, return them unchanged — let
-    the downstream SDK decide what to do with them. (Callers may forward
-    arbitrary bytes; we shouldn't reject here.)
+    If the bytes are not a recognisable image (Pillow raises
+    UnidentifiedImageError or OSError for truncated data), return them
+    unchanged — let the downstream SDK decide what to do with them. (Callers
+    may forward arbitrary bytes; we shouldn't reject here.)
     """
     try:
         with Image.open(io.BytesIO(image_bytes)) as img:
@@ -50,7 +50,7 @@ def _resize_if_needed(image_bytes: bytes) -> bytes:
                 return image_bytes
             img = img.copy()
             img.thumbnail((MAX_LONG_EDGE, MAX_LONG_EDGE), Image.LANCZOS)
-    except Exception:
+    except (Image.UnidentifiedImageError, OSError, ValueError):
         return image_bytes
     buf = io.BytesIO()
     img.save(buf, format="PNG")
