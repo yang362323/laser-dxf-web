@@ -99,3 +99,55 @@ def _classify_error(exc: BaseException) -> _RetryDecision:
         return _RetryDecision(retry=False, user_msg="请求被拒绝")
     # Unknown error type — treat as terminal but generic.
     return _RetryDecision(retry=False, user_msg="请求被拒绝")
+
+
+def _build_client(api_key: str) -> OpenAI:
+    """Construct a real OpenAI client pointed at Volcengine Ark.
+
+    Centralised so tests can pass a MagicMock instead and so the timeouts
+    are set in exactly one place.
+    """
+    return OpenAI(
+        api_key=api_key,
+        base_url="https://ark.cn-beijing.volces.com/api/v3",
+        timeout=httpx.Timeout(10.0, read=60.0),
+    )
+
+
+def _call_once(
+    *,
+    client: OpenAI,
+    model: str,
+    prompt: str,
+    image_bytes: bytes,
+) -> bytes:
+    """One SDK call. Returns the cleaned PNG bytes.
+
+    Raises DoubaoAPIError (terminal) for malformed responses. Propagates
+    openai.* exceptions untouched so the caller (run) can classify and
+    decide whether to retry.
+    """
+    b64 = base64.b64encode(image_bytes).decode()
+    data_url = f"data:image/png;base64,{b64}"
+    resp = client.images.generate(
+        model=model,
+        prompt=prompt,
+        image=[data_url],
+        size="auto",
+        response_format="b64_json",
+    )
+    item = resp.data[0]
+    out_b64 = getattr(item, "b64_json", None)
+    if not out_b64:
+        raise DoubaoAPIError(
+            user_msg="返回数据异常",
+            internal_msg="doubao response had no b64_json",
+        )
+    decoded = base64.b64decode(out_b64)
+    # Cheap sanity check: PNG header
+    if decoded[:4] != b"\x89PNG":
+        raise DoubaoAPIError(
+            user_msg="返回数据异常",
+            internal_msg="doubao b64 decoded to non-PNG bytes",
+        )
+    return decoded

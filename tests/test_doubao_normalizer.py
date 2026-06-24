@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
+import base64
 import io
+from unittest.mock import MagicMock
 
 import httpx
 import pytest
-from openai import APIConnectionError, APIStatusError
+from openai import APIConnectionError, APIStatusError, OpenAI
 from PIL import Image
 
 from app.doubao_normalizer import (
     DoubaoAPIError,
     NormalizedImage,
+    _call_once,
     _classify_error,
     _resize_if_needed,
 )
@@ -98,3 +101,75 @@ def test_classify_401_403_is_terminal_with_auth_msg():
         decision = _classify_error(_make_status_error(s))
         assert decision.retry is False
         assert "鉴权" in decision.user_msg
+
+
+def _fake_b64_response(b64_png: str) -> MagicMock:
+    """Build a Mock that mimics the openai ImagesResponse shape we use."""
+    resp = MagicMock()
+    resp.data = [MagicMock(b64_json=b64_png, url=None)]
+    return resp
+
+
+def test_call_once_returns_decoded_bytes():
+    png_bytes = _make_png_bytes(8, 8)
+    b64 = base64.b64encode(png_bytes).decode()
+    client = MagicMock(spec=OpenAI)
+    client.images.generate.return_value = _fake_b64_response(b64)
+
+    out = _call_once(
+        client=client,
+        model="doubao-seedream-5-0-2 60128",
+        prompt="do the thing",
+        image_bytes=b"original",
+    )
+    assert out == png_bytes
+
+
+def test_call_once_sends_image_as_data_url():
+    png_bytes = _make_png_bytes(8, 8)
+    b64 = base64.b64encode(png_bytes).decode()
+    client = MagicMock(spec=OpenAI)
+    client.images.generate.return_value = _fake_b64_response(b64)
+
+    _call_once(
+        client=client,
+        model="m",
+        prompt="p",
+        image_bytes=b"orig",
+    )
+    client.images.generate.assert_called_once()
+    kwargs = client.images.generate.call_args.kwargs
+    assert kwargs["model"] == "m"
+    assert kwargs["prompt"] == "p"
+    assert isinstance(kwargs["image"], list) and len(kwargs["image"]) == 1
+    sent = kwargs["image"][0]
+    assert sent.startswith("data:image/png;base64,")
+    # Round-trip the base64 portion back to bytes
+    payload = sent.split(",", 1)[1]
+    assert base64.b64decode(payload) == b"orig"
+
+
+def test_call_once_raises_when_no_b64_and_no_url():
+    client = MagicMock(spec=OpenAI)
+    resp = MagicMock()
+    resp.data = [MagicMock(b64_json=None, url=None)]
+    client.images.generate.return_value = resp
+
+    with pytest.raises(DoubaoAPIError) as exc_info:
+        _call_once(
+            client=client, model="m", prompt="p", image_bytes=b"x"
+        )
+    assert "返回数据异常" in exc_info.value.user_msg
+
+
+def test_call_once_raises_on_garbage_b64():
+    client = MagicMock(spec=OpenAI)
+    # Valid base64, but not valid PNG
+    bad_b64 = base64.b64encode(b"not a png").decode()
+    client.images.generate.return_value = _fake_b64_response(bad_b64)
+
+    with pytest.raises(DoubaoAPIError) as exc_info:
+        _call_once(
+            client=client, model="m", prompt="p", image_bytes=b"x"
+        )
+    assert "返回数据异常" in exc_info.value.user_msg
