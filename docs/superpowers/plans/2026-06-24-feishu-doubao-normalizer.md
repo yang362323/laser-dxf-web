@@ -687,7 +687,10 @@ def _fake_b64_response(b64_png: str) -> MagicMock:
 
 
 def test_call_once_returns_decoded_bytes():
-    b64 = base64.b64encode(b"fakepng").decode()
+    # The implementation verifies the returned bytes are PNG; we must hand it
+    # a real PNG payload for the success path.
+    fake_png = _make_png_bytes(8, 8)
+    b64 = base64.b64encode(fake_png).decode()
     client = MagicMock(spec=OpenAI)
     client.images.generate.return_value = _fake_b64_response(b64)
 
@@ -697,11 +700,12 @@ def test_call_once_returns_decoded_bytes():
         prompt="do the thing",
         image_bytes=b"original",
     )
-    assert out == b"fakepng"
+    assert out == fake_png
 
 
 def test_call_once_sends_image_as_data_url():
-    b64 = base64.b64encode(b"fakepng").decode()
+    fake_png = _make_png_bytes(8, 8)
+    b64 = base64.b64encode(fake_png).decode()
     client = MagicMock(spec=OpenAI)
     client.images.generate.return_value = _fake_b64_response(b64)
 
