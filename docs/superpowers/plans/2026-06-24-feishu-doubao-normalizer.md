@@ -151,8 +151,8 @@ expected behaviour of the pipeline.
 from __future__ import annotations
 
 DEFAULT_PROMPT: str = (
-    "先提高图片清晰度，把图片的logo摆正，"
-    "图片中的logo改为纯黑色，然后背景改成纯白。"
+    "先提高图片清晰度，把图片的 logo 摆正，"
+    "图片中的 logo 改为纯黑色，然后背景改成纯白。"
 )
 ```
 
