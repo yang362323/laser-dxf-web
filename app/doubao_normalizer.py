@@ -66,3 +66,36 @@ class NormalizedImage:
 
     cleaned_bytes: bytes
     cleaned_path: Path
+
+
+@dataclass(frozen=True)
+class _RetryDecision:
+    """Internal: tells run() whether to retry and what to say to the user
+    if we give up."""
+
+    retry: bool
+    user_msg: str
+
+
+def _classify_error(exc: BaseException) -> _RetryDecision:
+    """Map a single SDK exception to a retry decision + Chinese user message.
+
+    No side effects; no logging. Called inside run() once per failed call.
+    """
+    if isinstance(exc, APIConnectionError):
+        return _RetryDecision(retry=True, user_msg="网络问题")
+    if isinstance(exc, APIStatusError):
+        status = getattr(exc, "status_code", None)
+        code = getattr(exc, "code", None)
+        if code == "AuditReject":
+            return _RetryDecision(retry=False, user_msg="图片内容被 AI 拒绝")
+        if code == "Arrearage":
+            return _RetryDecision(retry=False, user_msg="账户欠费")
+        if status in (401, 403):
+            return _RetryDecision(retry=False, user_msg="鉴权失败")
+        if status is not None and 500 <= status < 600:
+            return _RetryDecision(retry=True, user_msg="服务暂时不可用")
+        # Any other 4xx (400, 404, 422, ...)
+        return _RetryDecision(retry=False, user_msg="请求被拒绝")
+    # Unknown error type — treat as terminal but generic.
+    return _RetryDecision(retry=False, user_msg="请求被拒绝")
