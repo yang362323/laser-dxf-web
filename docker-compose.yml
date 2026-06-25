@@ -7,8 +7,8 @@ services:
         # Pin to a specific commit/tag for reproducible builds.
         # Default is the main branch.
         ITD_REF: main
-    image: feishu-laser-dxf-bot:0.2.0
-    container_name: feishu-laser-dxf-bot
+    image: dingtalk-laser-dxf-bot:0.3.0
+    container_name: dingtalk-laser-dxf-bot
     restart: unless-stopped
     env_file:
       - .env

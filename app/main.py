@@ -1,8 +1,8 @@
-"""Process entry point.
+"""Process entry point — DingTalk Stream Mode.
 
 Wires:
-    Config -> lark_oapi.Client (for API calls) -> FeishuClient wrapper
-    Config -> EventDispatcherHandler (subscribes to message-receive events)
+    Config -> DingTalkClient (sync REST API calls)
+    Config -> DingTalkStreamClient (WebSocket, receives messages)
     Config -> FastAPI app (only /healthz)
 
 Run with: ``python -m app.main``.
@@ -10,33 +10,32 @@ Run with: ``python -m app.main``.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import shutil
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-import lark_oapi as lark
+import dingtalk_stream
 import uvicorn
+from dingtalk_stream import AckMessage, ChatbotMessage
 from fastapi import FastAPI
-from lark_oapi.api.im.v1 import P2ImMessageReceiveV1
-from lark_oapi.event.dispatcher_handler import EventDispatcherHandler
 
 from .config import Config
-from .feishu_client import FeishuClient
+from .dingtalk_client import DingTalkClient
 from .handlers import (
-    NoImageError,
+    ParsedImageMessage,
     handle_dxf_request,
     make_work_dir,
-    parse_slash_command_event,
 )
 
 log = logging.getLogger(__name__)
 
 
-def _build_app(cfg: Config) -> FastAPI:
+def _build_app() -> FastAPI:
     """Build the FastAPI app that exposes /healthz."""
-    app = FastAPI(title="feishu-laser-dxf-bot")
+    app = FastAPI(title="dingtalk-laser-dxf-bot")
 
     @app.get("/healthz")
     def healthz() -> dict:
@@ -45,66 +44,89 @@ def _build_app(cfg: Config) -> FastAPI:
     return app
 
 
-def _make_message_handler(cfg: Config, feishu: FeishuClient, executor: ThreadPoolExecutor):
-    """Build a callback that handles incoming Feishu messages.
+class DxfBotHandler(dingtalk_stream.ChatbotHandler):
+    """Receives messages from DingTalk Stream, dispatches image conversion."""
 
-    The handler is registered with ``EventDispatcherHandler`` for the
-    ``p2.im.message.receive_v1`` event. It:
-    1. Converts the typed event to the dict shape parse_slash_command_event expects.
-    2. Tries to parse a /dxf command with an image.
-    3. On success, schedules a conversion on the thread pool.
-    """
+    def __init__(
+        self,
+        cfg: Config,
+        dingtalk: DingTalkClient,
+        executor: ThreadPoolExecutor,
+    ) -> None:
+        super().__init__()
+        self._cfg = cfg
+        self._dingtalk = dingtalk
+        self._executor = executor
 
-    def _on_message(data: P2ImMessageReceiveV1) -> None:
+    async def process(self, callback: dingtalk_stream.Callback) -> tuple[int, str]:
+        """Handle one incoming message.
+
+        Only processes image (picture) messages. Returns AckMessage.STATUS_OK
+        immediately — the actual processing runs on a thread pool so we don't
+        block the WebSocket.
+        """
         try:
-            event_dict = _typed_event_to_dict(data)
-        except AttributeError:
-            log.warning("malformed event: %r", data)
-            return
+            msg = ChatbotMessage.from_dict(callback.data)
+        except Exception:
+            log.warning("failed to parse incoming message: %r", callback.data)
+            return AckMessage.STATUS_OK, "parse error"
 
+        # Only handle picture messages
+        msg_type = getattr(msg, "message_type", "") or ""
+        if msg_type != "picture":
+            log.info("ignoring non-picture message: type=%s", msg_type)
+            return AckMessage.STATUS_OK, "not an image"
+
+        # Extract download code
+        download_code = ""
         try:
-            parsed = parse_slash_command_event(event_dict)
-        except NoImageError as e:
-            log.info("ignoring message (not a /dxf image): %s", e)
-            return
+            image_list = msg.get_image_list() if callable(getattr(msg, "get_image_list", None)) else []
+        except Exception:
+            image_list = []
+        if image_list:
+            download_code = getattr(image_list[0], "download_code", "")
+        if not download_code:
+            img_content = getattr(msg, "image_content", None)
+            if img_content:
+                download_code = getattr(img_content, "download_code", "")
 
-        work_dir = make_work_dir(Path(cfg.work_dir))
-        executor.submit(
-            handle_dxf_request,
-            parsed=parsed,
-            feishu=feishu,
-            work_dir=work_dir,
-            settings=cfg,
+        if not download_code:
+            log.warning("picture message has no download_code")
+            return AckMessage.STATUS_OK, "no download code"
+
+        session_webhook = getattr(msg, "session_webhook", "") or ""
+        conversation_id = getattr(msg, "conversation_id", "") or ""
+
+        if not session_webhook:
+            log.warning("no session_webhook in message")
+            return AckMessage.STATUS_OK, "no webhook"
+
+        parsed = ParsedImageMessage(
+            download_code=download_code,
+            session_webhook=session_webhook,
+            conversation_id=conversation_id,
         )
+
+        work_dir = make_work_dir(Path(self._cfg.work_dir))
+
+        # Dispatch to thread pool so we don't block the WebSocket.
+        loop = asyncio.get_running_loop()
+        loop.run_in_executor(
+            self._executor,
+            lambda: handle_dxf_request(
+                parsed=parsed,
+                dingtalk=self._dingtalk,
+                work_dir=work_dir,
+                settings=self._cfg,
+            ),
+        )
+
         log.info(
-            "scheduled /dxf conversion: image_key=%s chat=%s msg=%s",
-            parsed.image_key,
-            parsed.chat_id,
-            parsed.message_id,
+            "scheduled conversion: download_code=%s... conversation=%s",
+            download_code[:20],
+            conversation_id,
         )
-
-    return _on_message
-
-
-def _typed_event_to_dict(data: P2ImMessageReceiveV1) -> dict:
-    """Convert a P2ImMessageReceiveV1 typed object into the flat dict shape
-    that :func:`app.handlers.parse_slash_command_event` accepts."""
-    msg = data.event.message
-    header_type = data.header.event_type if data.header else "im.message.receive_v1"
-    return {
-        "header": {"event_type": header_type},
-        "event": {
-            "message_id": msg.message_id or "",
-            "chat_id": msg.chat_id or "",
-            "chat_type": msg.chat_type or "",
-            "message": {
-                "message_id": msg.message_id or "",
-                "chat_id": msg.chat_id or "",
-                "message_type": msg.message_type or "",
-                "content": msg.content or "",
-            },
-        },
-    }
+        return AckMessage.STATUS_OK, "ok"
 
 
 def main() -> None:
@@ -114,41 +136,40 @@ def main() -> None:
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
 
-    # Stale-state cleanup (spec §5).
+    # Stale-state cleanup
     shutil.rmtree(cfg.work_dir, ignore_errors=True)
 
-    lark_api = (
-        lark.Client.builder()
-        .app_id(cfg.app_id)
-        .app_secret(cfg.app_secret)
-        .log_level(lark.LogLevel.INFO)
-        .build()
+    # Sync REST client for downloading / uploading
+    dingtalk = DingTalkClient(
+        app_key=cfg.dingtalk_app_key,
+        app_secret=cfg.dingtalk_app_secret,
+        robot_code=cfg.dingtalk_robot_code,
     )
-    feishu = FeishuClient(lark_api)
 
+    # Thread pool for blocking work (image processing, API calls)
     executor = ThreadPoolExecutor(max_workers=cfg.max_workers)
 
-    handler = (
-        EventDispatcherHandler.builder("", "")
-        .register_p2_im_message_receive_v1(_make_message_handler(cfg, feishu, executor))
-        .build()
+    # Stream client — receives messages via WebSocket
+    credential = dingtalk_stream.Credential(
+        cfg.dingtalk_app_key, cfg.dingtalk_app_secret
     )
+    stream_client = dingtalk_stream.DingTalkStreamClient(credential)
+    handler = DxfBotHandler(cfg, dingtalk, executor)
+    stream_client.register_callback_handler(ChatbotMessage.TOPIC, handler)
 
-    ws_client = lark.ws.Client(
-        app_id=cfg.app_id,
-        app_secret=cfg.app_secret,
-        event_handler=handler,
-        log_level=lark.LogLevel.INFO,
-    )
+    # Health server in daemon thread
+    app = _build_app()
 
-    def _run_ws() -> None:
-        ws_client.start()
+    def _run_health() -> None:
+        uvicorn.run(app, host="0.0.0.0", port=cfg.health_port, log_level="warning")
 
-    threading.Thread(target=_run_ws, daemon=True, name="feishu-ws").start()
+    health_thread = threading.Thread(target=_run_health, daemon=True, name="health")
+    health_thread.start()
+    log.info("health server listening on :%s", cfg.health_port)
 
-    log.info("starting health server on :%s", cfg.health_port)
-    app = _build_app(cfg)
-    uvicorn.run(app, host="0.0.0.0", port=cfg.health_port, log_level="warning")
+    # Block forever on the Stream connection
+    log.info("starting DingTalk Stream client...")
+    stream_client.start_forever()
 
 
 if __name__ == "__main__":

@@ -3,17 +3,18 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "feishu-laser-dxf-bot"
-version = "0.1.0"
-description = "Feishu chatbot that converts images to laser-ready DXF files."
+name = "dingtalk-laser-dxf-bot"
+version = "0.3.0"
+description = "DingTalk chatbot that converts images to laser-ready DXF files."
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.110",
     "uvicorn[standard]>=0.27",
-    "lark-oapi>=1.2",
+    "dingtalk-stream>=0.1.0",
     "matplotlib>=3.8",
     "Pillow>=10.0",
     "openai>=1.40",
+    "httpx>=0.27",
 ]
 
 [project.optional-dependencies]
