@@ -12,6 +12,9 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    environment:
+      ARK_API_KEY: ${ARK_API_KEY:?ARK_API_KEY is required}
+      ARK_MODEL: ${ARK_MODEL:-doubao-seedream-5-0-2 60128}
     ports:
       - "8080:8080"
     healthcheck:

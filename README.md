@@ -40,6 +40,22 @@ the `/dxf` text into the message box. The user then attaches an image and
 hits send. The bot sees a normal `im.message.receive_v1` event whose
 `message_type` is `image` and whose `content` starts with `/dxf`.
 
+## Volcengine Ark (Doubao) setup
+
+The bot calls Volcengine Ark's image generation API on every `/dxf` to
+normalize the input image. One-time setup:
+
+1. Open https://console.volcengine.com/ark/region:cn-beijing and create an
+   API key with access to the `doubao-seedream-5-0-2 60128` model.
+2. Copy the key into `.env` as `ARK_API_KEY=ark-...`.
+3. (Optional) Override the model id with `ARK_MODEL=...` in `.env`.
+4. Restart the bot: `docker compose restart bot`.
+
+Each `/dxf` request uses one image generation call. The first failed call
+is retried automatically; on a second failure the bot replies with the
+underlying reason (network / auth / 5xx / 4xx / content-rejected) and does
+not produce a DXF.
+
 ## Local development
 
 ```bash
@@ -83,6 +99,11 @@ The first build installs `image-to-laser-dxf` from the public GitHub repo
 - [ ] Send a corrupt image → bot replies with an error message
 - [ ] Two users in parallel → both succeed
 - [ ] `docker compose restart bot` → bot reconnects to Feishu without intervention
+- [ ] Send `/dxf` + a clear logo → reply has [cleaned image, preview, DXF]
+- [ ] Send `/dxf` + a blurry tilted logo → cleaned image is straightened, B/W
+- [ ] Disable network → user message mentions "网络问题" and no DXF
+- [ ] Set `ARK_MODEL=does-not-exist` → user message mentions model error
+- [ ] Set `ARK_API_KEY=invalid` → user message "鉴权失败"
 
 ## Layout
 
