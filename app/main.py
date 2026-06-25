@@ -16,6 +16,7 @@ import uvicorn
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse
 
+from .clawbot import ClawBotClient
 from .config import Config
 from . import converter, doubao_normalizer, doubao_prompt, preview, skew_correction
 from .doubao_normalizer import DoubaoAPIError
@@ -174,9 +175,44 @@ def main() -> None:
     shutil.rmtree(cfg.work_dir, ignore_errors=True)
 
     executor = ThreadPoolExecutor(max_workers=cfg.max_workers)
+
+    # ── WeChat Clawbot channel ──────────────────────────────────────────
+    def _on_wechat_image(image_bytes: bytes, from_user: str, ctx_token: str):
+        """Called by Clawbot when an image is received from WeChat."""
+        job_dir = Path(cfg.work_dir) / "output" / f"wx_{uuid.uuid4().hex}"
+        job_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            result = _process_image(
+                image_bytes=image_bytes, job_dir=job_dir,
+                ark_api_key=cfg.ark_api_key, ark_model=cfg.ark_model,
+            )
+            clawbot._last_context_token = ctx_token
+            clawbot.send_text(from_user, f"转换成功 · {result['shape_count']} 个轮廓"
+                             + (f" · 已纠偏 {result['skew_angle']:.1f}°" if result['skew_corrected'] else ""))
+            # Send cleaned image
+            cleaned = (job_dir / "normalized.png").read_bytes()
+            clawbot.send_image(from_user, cleaned)
+            # Send preview
+            preview_path = job_dir / "preview.png"
+            if preview_path.exists():
+                clawbot.send_image(from_user, preview_path.read_bytes())
+            # Send DXF file
+            dxf_path = job_dir / "output.dxf"
+            if dxf_path.exists():
+                clawbot.send_file(from_user, dxf_path.read_bytes(), "output.dxf")
+        except Exception:
+            log.exception("wechat conversion failed")
+            clawbot._last_context_token = ctx_token
+            clawbot.send_text(from_user, "转换失败，请重试")
+        finally:
+            shutil.rmtree(job_dir, ignore_errors=True)
+
+    clawbot = ClawBotClient(on_image=_on_wechat_image)
+    clawbot.start()
+
     app = _build_app(cfg, executor)
 
-    log.info("starting laser-dxf web app on :%s", cfg.port)
+    log.info("starting laser-dxf web app on :%s (Web + WeChat dual-channel)", cfg.port)
     uvicorn.run(app, host="0.0.0.0", port=cfg.port, log_level="warning")
 
 
