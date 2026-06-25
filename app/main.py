@@ -17,7 +17,7 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse
 
 from .config import Config
-from . import converter, doubao_normalizer, doubao_prompt, preview
+from . import converter, doubao_normalizer, doubao_prompt, preview, skew_correction
 from .doubao_normalizer import DoubaoAPIError
 
 log = logging.getLogger(__name__)
@@ -89,6 +89,8 @@ def _build_app(cfg: Config, executor: ThreadPoolExecutor) -> FastAPI:
             "preview_url": f"/api/output/{job_id}/preview.png",
             "dxf_url": f"/api/output/{job_id}/output.dxf",
             "shape_count": result["shape_count"],
+            "skew_corrected": result["skew_corrected"],
+            "skew_angle": result["skew_angle"],
         }
 
     # ── serve output files ─────────────────────────────────────────────
@@ -117,7 +119,7 @@ def _process_image(
     """Run the full image-to-DXF pipeline, save results to job_dir."""
     t0 = time.monotonic()
 
-    # 1. Doubao AI normalization (straighten + clarity + black logo + white bg)
+    # 1. Doubao AI normalization (clarity + black logo + white bg)
     normalized = doubao_normalizer.run(
         image_bytes=image_bytes,
         prompt=doubao_prompt.DEFAULT_PROMPT,
@@ -126,15 +128,23 @@ def _process_image(
         model=ark_model,
     )
 
-    # 2. DXF conversion
+    # 2. Skew correction on the CLEANED image
+    #    Clean black-on-white images give Hough line detection
+    #    much better signal than raw camera photos.
+    skew = skew_correction.correct(normalized.cleaned_bytes)
+    final_image = skew.corrected_bytes if skew.was_corrected else normalized.cleaned_bytes
+    if skew.was_corrected:
+        log.info("skew corrected: %.1f°", skew.angle_deg)
+
+    # 3. DXF conversion
     conv = converter.run(
-        image_bytes=normalized.cleaned_bytes,
+        image_bytes=final_image,
         image_suffix=".png",
         out_dxf_path=job_dir / "output.dxf",
         work_dir=job_dir,
     )
 
-    # 3. Preview
+    # 4. Preview
     try:
         preview_path = preview.render(conv.dxf_path, job_dir / "preview.png")
     except Exception:
@@ -149,6 +159,8 @@ def _process_image(
 
     return {
         "shape_count": conv.shape_count,
+        "skew_corrected": skew.was_corrected,
+        "skew_angle": skew.angle_deg,
     }
 
 
