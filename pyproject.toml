@@ -3,14 +3,14 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "dingtalk-laser-dxf-bot"
-version = "0.3.0"
-description = "DingTalk chatbot that converts images to laser-ready DXF files."
+name = "laser-dxf-web"
+version = "1.0.0"
+description = "PWA web app for converting images to laser-ready DXF files."
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.110",
     "uvicorn[standard]>=0.27",
-    "dingtalk-stream>=0.1.0",
+    "python-multipart>=0.0.9",
     "matplotlib>=3.8",
     "Pillow>=10.0",
     "openai>=1.40",

@@ -1,132 +1,165 @@
-"""Process entry point — DingTalk Stream Mode.
-
-Wires:
-    Config -> DingTalkClient (sync REST API calls)
-    Config -> DingTalkStreamClient (WebSocket, receives messages)
-    Config -> FastAPI app (only /healthz)
+"""Laser DXF Web App — PWA frontend + image conversion API.
 
 Run with: ``python -m app.main``.
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import shutil
-import threading
+import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-import dingtalk_stream
 import uvicorn
-from dingtalk_stream import AckMessage, ChatbotMessage
-from fastapi import FastAPI
+from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi.responses import FileResponse, HTMLResponse
 
 from .config import Config
-from .dingtalk_client import DingTalkClient
-from .handlers import (
-    ParsedImageMessage,
-    handle_dxf_request,
-    make_work_dir,
-)
+from . import converter, doubao_normalizer, doubao_prompt, preview, skew_correction
+from .doubao_normalizer import DoubaoAPIError
 
 log = logging.getLogger(__name__)
 
+STATIC_DIR = Path(__file__).parent / "static"
 
-def _build_app() -> FastAPI:
-    """Build the FastAPI app that exposes /healthz."""
-    app = FastAPI(title="dingtalk-laser-dxf-bot")
 
+def _build_app(cfg: Config, executor: ThreadPoolExecutor) -> FastAPI:
+    app = FastAPI(title="laser-dxf")
+
+    # ── health ──────────────────────────────────────────────────────────
     @app.get("/healthz")
     def healthz() -> dict:
         return {"status": "ok"}
 
+    # ── static files (PWA frontend) ─────────────────────────────────────
+    @app.get("/", response_class=HTMLResponse)
+    def index() -> str:
+        return (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+
+    @app.get("/{filename}")
+    async def static_file(filename: str):
+        """Serve static assets, but only for known file types."""
+        path = STATIC_DIR / filename
+        if not path.exists() or not path.is_file():
+            raise HTTPException(404)
+        media_map = {
+            ".js": "application/javascript",
+            ".json": "application/json",
+            ".png": "image/png",
+            ".ico": "image/x-icon",
+        }
+        ext = Path(filename).suffix
+        return FileResponse(str(path), media_type=media_map.get(ext, "application/octet-stream"))
+
+    # ── convert API ────────────────────────────────────────────────────
+    @app.post("/api/convert")
+    def api_convert(file: UploadFile = File(...)) -> dict:
+        """Upload an image, convert to DXF, return preview + download URLs."""
+        if not file.content_type or not file.content_type.startswith("image/"):
+            raise HTTPException(400, "only image files are supported")
+
+        image_bytes = file.file.read()
+        if not image_bytes:
+            raise HTTPException(400, "empty file")
+
+        job_id = uuid.uuid4().hex
+        job_dir = Path(cfg.work_dir) / "output" / job_id
+        job_dir.mkdir(parents=True, exist_ok=True)
+
+        try:
+            # Pipeline (sync, runs in thread pool via FastAPI's async)
+            result = _process_image(
+                image_bytes=image_bytes,
+                job_dir=job_dir,
+                ark_api_key=cfg.ark_api_key,
+                ark_model=cfg.ark_model,
+            )
+        except DoubaoAPIError as e:
+            shutil.rmtree(job_dir, ignore_errors=True)
+            raise HTTPException(500, f"AI 处理失败: {e.user_msg}")
+        except Exception:
+            log.exception("conversion failed")
+            shutil.rmtree(job_dir, ignore_errors=True)
+            raise HTTPException(500, "转换失败，请重试")
+
+        return {
+            "job_id": job_id,
+            "preview_url": f"/api/output/{job_id}/preview.png",
+            "dxf_url": f"/api/output/{job_id}/output.dxf",
+            "shape_count": result["shape_count"],
+            "skew_corrected": result["skew_corrected"],
+            "skew_angle": result["skew_angle"],
+        }
+
+    # ── serve output files ─────────────────────────────────────────────
+    @app.get("/api/output/{job_id}/{filename}")
+    def download_output(job_id: str, filename: str):
+        file_path = Path(cfg.work_dir) / "output" / job_id / filename
+        if not file_path.exists():
+            raise HTTPException(404, "文件不存在或已过期")
+        media_type = "image/png" if filename.endswith(".png") else "application/octet-stream"
+        return FileResponse(
+            str(file_path),
+            media_type=media_type,
+            filename=filename,
+        )
+
     return app
 
 
-class DxfBotHandler(dingtalk_stream.ChatbotHandler):
-    """Receives messages from DingTalk Stream, dispatches image conversion."""
+def _process_image(
+    *,
+    image_bytes: bytes,
+    job_dir: Path,
+    ark_api_key: str,
+    ark_model: str,
+) -> dict:
+    """Run the full image-to-DXF pipeline, save results to job_dir."""
+    t0 = time.monotonic()
 
-    def __init__(
-        self,
-        cfg: Config,
-        dingtalk: DingTalkClient,
-        executor: ThreadPoolExecutor,
-    ) -> None:
-        super().__init__()
-        self._cfg = cfg
-        self._dingtalk = dingtalk
-        self._executor = executor
+    # 1. Skew correction
+    skew = skew_correction.correct(image_bytes)
+    if skew.was_corrected:
+        log.info("skew corrected: %.1f°", skew.angle_deg)
+        image_bytes = skew.corrected_bytes
 
-    async def process(self, callback: dingtalk_stream.Callback) -> tuple[int, str]:
-        """Handle one incoming message.
+    # 2. Doubao normalization
+    normalized = doubao_normalizer.run(
+        image_bytes=image_bytes,
+        prompt=doubao_prompt.DEFAULT_PROMPT,
+        work_dir=job_dir,
+        api_key=ark_api_key,
+        model=ark_model,
+    )
 
-        Only processes image (picture) messages. Returns AckMessage.STATUS_OK
-        immediately — the actual processing runs on a thread pool so we don't
-        block the WebSocket.
-        """
-        try:
-            msg = ChatbotMessage.from_dict(callback.data)
-        except Exception:
-            log.warning("failed to parse incoming message: %r", callback.data)
-            return AckMessage.STATUS_OK, "parse error"
+    # 3. DXF conversion
+    conv = converter.run(
+        image_bytes=normalized.cleaned_bytes,
+        image_suffix=".png",
+        out_dxf_path=job_dir / "output.dxf",
+        work_dir=job_dir,
+    )
 
-        # Only handle picture messages
-        msg_type = getattr(msg, "message_type", "") or ""
-        if msg_type != "picture":
-            log.info("ignoring non-picture message: type=%s", msg_type)
-            return AckMessage.STATUS_OK, "not an image"
+    # 4. Preview
+    try:
+        preview_path = preview.render(conv.dxf_path, job_dir / "preview.png")
+    except Exception:
+        log.exception("preview render failed")
+        preview_path = None
 
-        # Extract download code
-        download_code = ""
-        try:
-            image_list = msg.get_image_list() if callable(getattr(msg, "get_image_list", None)) else []
-        except Exception:
-            image_list = []
-        if image_list:
-            download_code = getattr(image_list[0], "download_code", "")
-        if not download_code:
-            img_content = getattr(msg, "image_content", None)
-            if img_content:
-                download_code = getattr(img_content, "download_code", "")
+    duration = time.monotonic() - t0
+    log.info(
+        "conversion complete: job=%s shapes=%d duration=%.1fs",
+        job_dir.name, conv.shape_count, duration,
+    )
 
-        if not download_code:
-            log.warning("picture message has no download_code")
-            return AckMessage.STATUS_OK, "no download code"
-
-        session_webhook = getattr(msg, "session_webhook", "") or ""
-        conversation_id = getattr(msg, "conversation_id", "") or ""
-
-        if not session_webhook:
-            log.warning("no session_webhook in message")
-            return AckMessage.STATUS_OK, "no webhook"
-
-        parsed = ParsedImageMessage(
-            download_code=download_code,
-            session_webhook=session_webhook,
-            conversation_id=conversation_id,
-        )
-
-        work_dir = make_work_dir(Path(self._cfg.work_dir))
-
-        # Dispatch to thread pool so we don't block the WebSocket.
-        loop = asyncio.get_running_loop()
-        loop.run_in_executor(
-            self._executor,
-            lambda: handle_dxf_request(
-                parsed=parsed,
-                dingtalk=self._dingtalk,
-                work_dir=work_dir,
-                settings=self._cfg,
-            ),
-        )
-
-        log.info(
-            "scheduled conversion: download_code=%s... conversation=%s",
-            download_code[:20],
-            conversation_id,
-        )
-        return AckMessage.STATUS_OK, "ok"
+    return {
+        "shape_count": conv.shape_count,
+        "skew_corrected": skew.was_corrected,
+        "skew_angle": skew.angle_deg,
+    }
 
 
 def main() -> None:
@@ -136,40 +169,13 @@ def main() -> None:
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
 
-    # Stale-state cleanup
     shutil.rmtree(cfg.work_dir, ignore_errors=True)
 
-    # Sync REST client for downloading / uploading
-    dingtalk = DingTalkClient(
-        app_key=cfg.dingtalk_app_key,
-        app_secret=cfg.dingtalk_app_secret,
-        robot_code=cfg.dingtalk_robot_code,
-    )
-
-    # Thread pool for blocking work (image processing, API calls)
     executor = ThreadPoolExecutor(max_workers=cfg.max_workers)
+    app = _build_app(cfg, executor)
 
-    # Stream client — receives messages via WebSocket
-    credential = dingtalk_stream.Credential(
-        cfg.dingtalk_app_key, cfg.dingtalk_app_secret
-    )
-    stream_client = dingtalk_stream.DingTalkStreamClient(credential)
-    handler = DxfBotHandler(cfg, dingtalk, executor)
-    stream_client.register_callback_handler(ChatbotMessage.TOPIC, handler)
-
-    # Health server in daemon thread
-    app = _build_app()
-
-    def _run_health() -> None:
-        uvicorn.run(app, host="0.0.0.0", port=cfg.health_port, log_level="warning")
-
-    health_thread = threading.Thread(target=_run_health, daemon=True, name="health")
-    health_thread.start()
-    log.info("health server listening on :%s", cfg.health_port)
-
-    # Block forever on the Stream connection
-    log.info("starting DingTalk Stream client...")
-    stream_client.start_forever()
+    log.info("starting laser-dxf web app on :%s", cfg.port)
+    uvicorn.run(app, host="0.0.0.0", port=cfg.port, log_level="warning")
 
 
 if __name__ == "__main__":

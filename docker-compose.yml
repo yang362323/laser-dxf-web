@@ -1,20 +1,15 @@
 services:
-  bot:
+  app:
     build:
       context: .
       dockerfile: Dockerfile
       args:
-        # Pin to a specific commit/tag for reproducible builds.
-        # Default is the main branch.
         ITD_REF: main
-    image: dingtalk-laser-dxf-bot:0.3.0
-    container_name: dingtalk-laser-dxf-bot
+    image: laser-dxf-web:1.0.0
+    container_name: laser-dxf-web
     restart: unless-stopped
     env_file:
       - .env
-    environment:
-      ARK_API_KEY: ${ARK_API_KEY:?ARK_API_KEY is required}
-      ARK_MODEL: ${ARK_MODEL:-doubao-seedream-4-0-250828}
     ports:
       - "8080:8080"
     healthcheck:
