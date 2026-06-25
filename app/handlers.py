@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -93,6 +94,7 @@ def handle_dxf_request(
             return
 
         feishu.reply_text(parsed.message_id, "正在清理图片...")
+        doubao_start = time.monotonic()
         try:
             normalized = doubao_normalizer.run(
                 image_bytes=image_bytes,
@@ -107,7 +109,10 @@ def handle_dxf_request(
             )
             return
 
-        feishu.reply_text(parsed.message_id, "正在转换 DXF...")
+        # F7: if Doubao completed quickly, skip the second progress reply
+        # to avoid message spam.
+        if time.monotonic() - doubao_start >= 3.0:
+            feishu.reply_text(parsed.message_id, "正在转换 DXF...")
         try:
             cleaned_key = feishu.upload_image_bytes(
                 normalized.cleaned_bytes, ".png"

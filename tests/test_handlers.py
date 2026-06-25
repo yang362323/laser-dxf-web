@@ -94,8 +94,11 @@ def test_handle_dxf_happy_path(mocker, sample_jpg: Path, tmp_path: Path, setting
         settings=settings,
     )
 
-    # Progress: at least 3 reply_text calls
-    assert fake_feishu.reply_text.call_count >= 3
+    # Progress: 2 or 3 calls (3rd is conditional on Doubao taking >=3s — F7)
+    assert fake_feishu.reply_text.call_count >= 2
+    texts = [c.args[1] for c in fake_feishu.reply_text.call_args_list]
+    assert any("正在处理" in t for t in texts)
+    assert any("正在清理图片" in t for t in texts)
     fake_feishu.download_image.assert_called_once_with("img_v2_abc")
     handlers.doubao_normalizer.run.assert_called_once()
     handlers.converter.run.assert_called_once()
