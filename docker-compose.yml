@@ -7,7 +7,7 @@ services:
         # Pin to a specific commit/tag for reproducible builds.
         # Default is the main branch.
         ITD_REF: main
-    image: feishu-laser-dxf-bot:0.1.0
+    image: feishu-laser-dxf-bot:0.2.0
     container_name: feishu-laser-dxf-bot
     restart: unless-stopped
     env_file:

@@ -117,7 +117,8 @@ def _build_client(api_key: str) -> OpenAI:
     return OpenAI(
         api_key=api_key,
         base_url="https://ark.cn-beijing.volces.com/api/v3",
-        timeout=httpx.Timeout(10.0, read=60.0),
+        timeout=httpx.Timeout(15.0, read=120.0),
+        max_retries=0,
     )
 
 
@@ -204,7 +205,7 @@ def run(
     last_exc: BaseException | None = None
     decision: _RetryDecision | None = None
 
-    for attempt in (1, 2):
+    for attempt in (1, 2, 3):
         start = time.monotonic()
         status = "ok"
         try:
@@ -236,7 +237,7 @@ def run(
             )
             if not decision.retry:
                 break
-            if attempt == 1:
+            if attempt < 3:
                 time.sleep(1.0)
 
     # Exhausted retries or terminal error

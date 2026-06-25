@@ -26,7 +26,7 @@ from lark_oapi.api.im.v1 import (
     CreateImageRequestBody,
     CreateMessageRequest,
     CreateMessageRequestBody,
-    GetImageRequest,
+    GetMessageResourceRequest,
     ReplyMessageRequest,
     ReplyMessageRequestBody,
 )
@@ -44,10 +44,22 @@ class FeishuClient:
 
     # --- downloads ---
 
-    def download_image(self, image_key: str) -> bytes:
-        """Download a message image by its image_key. Returns raw bytes."""
-        req = GetImageRequest.builder().image_key(image_key).build()
-        resp = self._client.im.v1.image.get(req)
+    def download_image(self, message_id: str, image_key: str) -> bytes:
+        """Download an image that a user sent in a message.
+
+        Uses the message resource API (not the image API), because
+        ``GET /im/v1/images/:image_key`` only works for images the bot
+        itself uploaded. User-sent images must be fetched via
+        ``GET /im/v1/messages/:message_id/resources/:file_key?type=image``.
+        """
+        req = (
+            GetMessageResourceRequest.builder()
+            .message_id(message_id)
+            .file_key(image_key)
+            .type("image")
+            .build()
+        )
+        resp = self._client.im.v1.message_resource.get(req)
         if not resp.success() or resp.file is None:
             raise FeishuAPIError(f"download_image failed: code={resp.code} msg={resp.msg}")
         return resp.file.read()
@@ -128,17 +140,13 @@ class FeishuClient:
         receive_id_type: str,
         text: str,
         image_keys: list[str] | None = None,
-        file_key: str | None = None,
     ) -> None:
-        """Send a single 'post' (rich text) message with up to N inline images
-        plus an optional file attachment.
+        """Send a 'post' (rich text) message with optional inline images.
 
         ``receive_id_type`` is one of ``chat_id``, ``open_id``, ``user_id``,
         ``email`` — exactly as Feishu's API expects.
         """
-        content = self._build_post_content(
-            text=text, image_keys=image_keys, file_key=file_key
-        )
+        content = self._build_post_content(text=text, image_keys=image_keys)
         body = (
             CreateMessageRequestBody.builder()
             .receive_id(receive_id)
@@ -161,18 +169,34 @@ class FeishuClient:
         *,
         text: str,
         image_keys: list[str] | None,
-        file_key: str | None,
     ) -> dict:
-        """Assemble a Feishu post-message content body.
-
-        A post payload is a list of paragraphs; each paragraph is a list of
-        inline elements (text / img / media / file / link). Files appear via
-        ``media`` (Feishu's file slot in post messages). Multiple images
-        are rendered as separate paragraphs in the order given.
-        """
+        """Assemble a Feishu post-message content body."""
         paragraphs: list[list[dict]] = [[{"tag": "text", "text": text}]]
         for key in image_keys or []:
             paragraphs.append([{"tag": "img", "image_key": key}])
-        if file_key:
-            paragraphs.append([{"tag": "media", "file_key": file_key}])
         return {"zh_cn": {"title": "转换结果", "content": paragraphs}}
+
+    def send_file_message(
+        self,
+        *,
+        receive_id: str,
+        receive_id_type: str,
+        file_key: str,
+    ) -> None:
+        """Send a file as a standalone file message."""
+        body = (
+            CreateMessageRequestBody.builder()
+            .receive_id(receive_id)
+            .msg_type("file")
+            .content(json.dumps({"file_key": file_key}))
+            .build()
+        )
+        req = (
+            CreateMessageRequest.builder()
+            .receive_id_type(receive_id_type)
+            .request_body(body)
+            .build()
+        )
+        resp = self._client.im.v1.message.create(req)
+        if not resp.success():
+            raise FeishuAPIError(f"send_file_message failed: code={resp.code} msg={resp.msg}")

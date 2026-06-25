@@ -9,16 +9,19 @@ worker pool). All filesystem side effects happen inside the supplied
 from __future__ import annotations
 
 import json
+import logging
 import shutil
 import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import converter, doubao_normalizer, doubao_prompt, preview
+from . import converter, doubao_normalizer, doubao_prompt, preview, skew_correction
 from .config import Config
 from .doubao_normalizer import DoubaoAPIError
 from .feishu_client import FeishuAPIError, FeishuClient
+
+log = logging.getLogger(__name__)
 
 
 class NoImageError(ValueError):
@@ -88,10 +91,20 @@ def handle_dxf_request(
     try:
         feishu.reply_text(parsed.message_id, "正在处理...")
         try:
-            image_bytes = feishu.download_image(parsed.image_key)
+            image_bytes = feishu.download_image(parsed.message_id, parsed.image_key)
         except FeishuAPIError:
+            log.exception("download_image failed")
             feishu.reply_text(parsed.message_id, "图片下载失败,请重试")
             return
+
+        # Deterministic skew correction before AI normalization.
+        # OpenCV detects the dominant angle of the content and rotates
+        # the image so the subject is axis-aligned. This is far more
+        # reliable than asking a generative model to "straighten" things.
+        skew = skew_correction.correct(image_bytes)
+        if skew.was_corrected:
+            log.info("skew corrected: %.1f°", skew.angle_deg)
+            image_bytes = skew.corrected_bytes
 
         feishu.reply_text(parsed.message_id, "正在清理图片...")
         doubao_start = time.monotonic()
@@ -118,6 +131,7 @@ def handle_dxf_request(
                 normalized.cleaned_bytes, ".png"
             )
         except FeishuAPIError:
+            log.exception("cleaned image upload failed")
             feishu.reply_text(parsed.message_id, "清理后图片上传失败,请重试")
             return
 
@@ -129,6 +143,7 @@ def handle_dxf_request(
                 work_dir=work_dir,
             )
         except FileNotFoundError:
+            log.exception("converter.run FileNotFoundError")
             feishu.reply_text(parsed.message_id, "无法读取图片,可能格式损坏")
             return
 
@@ -138,11 +153,13 @@ def handle_dxf_request(
             preview_path = preview.render(conv.dxf_path, work_dir / "preview.png")
             preview_key = feishu.upload_image(preview_path)
         except Exception:  # noqa: BLE001 - preview is optional
+            log.exception("preview generation failed (non-fatal)")
             preview_key = None
 
         try:
             file_key = feishu.upload_file(conv.dxf_path)
         except FeishuAPIError:
+            log.exception("upload_file failed")
             feishu.reply_text(parsed.message_id, "DXF 上传失败,稍后再试")
             return
 
@@ -153,11 +170,18 @@ def handle_dxf_request(
                 receive_id_type=parsed.receive_id_type,
                 text=summary,
                 image_keys=[cleaned_key, preview_key] if preview_key else [cleaned_key],
+            )
+            feishu.send_file_message(
+                receive_id=parsed.chat_id,
+                receive_id_type=parsed.receive_id_type,
                 file_key=file_key,
             )
         except FeishuAPIError:
+            log.exception("send result message failed")
             # Last-resort: user gets no reply but DXF was uploaded; not retrying.
             return
+    except Exception:
+        log.exception("unhandled error in /dxf handler")
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
 
