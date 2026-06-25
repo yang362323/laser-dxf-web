@@ -46,7 +46,7 @@ The bot calls Volcengine Ark's image generation API on every `/dxf` to
 normalize the input image. One-time setup:
 
 1. Open https://console.volcengine.com/ark/region:cn-beijing and create an
-   API key with access to the `doubao-seedream-5-0-2 60128` model.
+   API key with access to the `doubao-seedream-4-0-250828` model.
 2. Copy the key into `.env` as `ARK_API_KEY=ark-...`.
 3. (Optional) Override the model id with `ARK_MODEL=...` in `.env`.
 4. Restart the bot: `docker compose restart bot`.

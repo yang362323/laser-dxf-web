@@ -7,7 +7,7 @@
 - `~/projects/feishu-laser-dxf-bot/` (this project, MIT)
 - `~/image-to-laser-dxf` (local Python package, MIT)
 - Volcengine Ark Images API (`https://ark.cn-beijing.volces.com/api/v3`), OpenAI-compatible
-- Model: `doubao-seedream-5-0-2 60128`
+- Model: `doubao-seedream-4-0-250828`
 
 ## 1. Purpose & Scope
 
@@ -58,7 +58,7 @@ server. No public exposure, no new permissions, no new secret storage path.
 | ID | Requirement |
 |----|-------------|
 | N1 | API key and model id are read from environment variables `ARK_API_KEY` and `ARK_MODEL`. No new secret file. |
-| N2 | `ARK_MODEL` defaults to `doubao-seedream-5-0-2 60128` if not set. |
+| N2 | `ARK_MODEL` defaults to `doubao-seedream-4-0-250828` if not set. |
 | N3 | `openai` Python SDK is added to `dependencies` (not just dev). |
 | N4 | HTTP timeouts: connect 10 s, read 60 s. |
 | N5 | Images whose long edge exceeds 2048 px are resized with Pillow before upload to Ark (Ark accepts up to 4096 px on the long edge, but 2048 is a safer / cheaper default for the laser workflow). |
@@ -201,7 +201,7 @@ def send_post_message(
 class Settings(BaseSettings):
     # ... existing fields ...
     ark_api_key: str                                # ARK_API_KEY, required
-    ark_model: str = "doubao-seedream-5-0-2 60128"  # ARK_MODEL
+    ark_model: str = "doubao-seedream-4-0-250828"  # ARK_MODEL
 ```
 
 `ark_api_key` is **required** — application fails to start without it, with
@@ -301,14 +301,14 @@ Logging: each call emits one JSON line with `request_id`, `image_bytes_size`,
 ```yaml
 environment:
   ARK_API_KEY: ${ARK_API_KEY:?ARK_API_KEY is required}
-  ARK_MODEL: ${ARK_MODEL:-doubao-seedream-5-0-2 60128}
+  ARK_MODEL: ${ARK_MODEL:-doubao-seedream-4-0-250828}
 ```
 
 `.env.example` gains:
 
 ```
 ARK_API_KEY=ark-your-key-here
-# ARK_MODEL=doubao-seedream-5-0-2 60128
+# ARK_MODEL=doubao-seedream-4-0-250828
 ```
 
 `README.md` "Feishu console setup" section gains a one-paragraph note pointing

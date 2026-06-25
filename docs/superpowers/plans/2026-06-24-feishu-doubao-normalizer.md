@@ -18,7 +18,7 @@
 |---|---|---|
 | `app/doubao_prompt.py` | Create | Single module-level constant `DEFAULT_PROMPT`. No logic. |
 | `app/doubao_normalizer.py` | Create | `DoubaoAPIError`, `NormalizedImage` dataclass, `run(*, image_bytes, prompt, work_dir, api_key, model, client=None)` with internal retry. |
-| `app/config.py` | Modify | Add `ark_api_key` (required) and `ark_model` (default `doubao-seedream-5-0-2 60128`) env-driven fields. |
+| `app/config.py` | Modify | Add `ark_api_key` (required) and `ark_model` (default `doubao-seedream-4-0-250828`) env-driven fields. |
 | `app/feishu_client.py` | Modify | Add `upload_image_bytes(data, suffix) -> str`; change `send_post_message` to accept `image_keys: list[str] \| None` instead of `image_key: str \| None`. |
 | `app/handlers.py` | Modify | Between `feishu.download_image` and `converter.run`, call `doubao_normalizer.run`; upload cleaned image; pass `image_keys=[cleaned_key, preview_key]` to `send_post_message`. Add `DoubaoAPIError` branch. |
 | `pyproject.toml` | Modify | Add `openai>=1.40` to `dependencies`. |
@@ -224,7 +224,7 @@ def test_config_ark_model_default(monkeypatch):
     monkeypatch.setenv("ARK_API_KEY", "ark-test-key")
     monkeypatch.delenv("ARK_MODEL", raising=False)
     cfg = Config.from_env()
-    assert cfg.ark_model == "doubao-seedream-5-0-2 60128"
+    assert cfg.ark_model == "doubao-seedream-4-0-250828"
 
 
 def test_config_ark_model_override(monkeypatch):
@@ -233,9 +233,9 @@ def test_config_ark_model_override(monkeypatch):
     monkeypatch.setenv("FEISHU_APP_ID", "cli_x")
     monkeypatch.setenv("FEISHU_APP_SECRET", "secret")
     monkeypatch.setenv("ARK_API_KEY", "ark-test-key")
-    monkeypatch.setenv("ARK_MODEL", "doubao-seedream-5-0-2 60128-prod")
+    monkeypatch.setenv("ARK_MODEL", "doubao-seedream-4-0-250828-prod")
     cfg = Config.from_env()
-    assert cfg.ark_model == "doubao-seedream-5-0-2 60128-prod"
+    assert cfg.ark_model == "doubao-seedream-4-0-250828-prod"
 ```
 
 (If `tests/test_config.py` does not import `pytest` at the top, add `import pytest` near the existing imports.)
@@ -266,7 +266,7 @@ class ConfigError(RuntimeError):
     """Raised when required configuration is missing or invalid."""
 
 
-DEFAULT_ARK_MODEL: str = "doubao-seedream-5-0-2 60128"
+DEFAULT_ARK_MODEL: str = "doubao-seedream-4-0-250828"
 
 
 @dataclass(frozen=True)
@@ -696,7 +696,7 @@ def test_call_once_returns_decoded_bytes():
 
     out = _call_once(
         client=client,
-        model="doubao-seedream-5-0-2 60128",
+        model="doubao-seedream-4-0-250828",
         prompt="do the thing",
         image_bytes=b"original",
     )
@@ -1494,7 +1494,7 @@ def _settings(**overrides):
         convert_timeout_s=60,
         max_workers=3,
         ark_api_key="ark-test",
-        ark_model="doubao-seedream-5-0-2 60128",
+        ark_model="doubao-seedream-4-0-250828",
     )
     base.update(overrides)
     return Config(**base)
@@ -1807,7 +1807,7 @@ def settings() -> Config:
         convert_timeout_s=60,
         max_workers=3,
         ark_api_key="ark-test",
-        ark_model="doubao-seedream-5-0-2 60128",
+        ark_model="doubao-seedream-4-0-250828",
     )
 ```
 
@@ -1900,7 +1900,7 @@ def settings() -> Config:
         convert_timeout_s=60,
         max_workers=3,
         ark_api_key="ark-test",
-        ark_model="doubao-seedream-5-0-2 60128",
+        ark_model="doubao-seedream-4-0-250828",
     )
 
 
@@ -2086,7 +2086,7 @@ In `docker-compose.yml`, add a new `environment:` section under `services.bot`. 
 ```yaml
     environment:
       ARK_API_KEY: ${ARK_API_KEY:?ARK_API_KEY is required}
-      ARK_MODEL: ${ARK_MODEL:-doubao-seedream-5-0-2 60128}
+      ARK_MODEL: ${ARK_MODEL:-doubao-seedream-4-0-250828}
 ```
 
 (`docker-compose.yml` reads `.env` via `env_file`, so these `environment:` lines just export the same vars explicitly for fail-fast visibility.)
@@ -2097,7 +2097,7 @@ Append to `.env.example`:
 
 ```
 ARK_API_KEY=ark-your-key-here
-# ARK_MODEL=doubao-seedream-5-0-2 60128
+# ARK_MODEL=doubao-seedream-4-0-250828
 ```
 
 - [ ] **Step 3: Add an ARK section to `README.md`**
@@ -2111,7 +2111,7 @@ The bot calls Volcengine Ark's image generation API on every `/dxf` to
 normalize the input image. One-time setup:
 
 1. Open https://console.volcengine.com/ark/region:cn-beijing and create an
-   API key with access to the `doubao-seedream-5-0-2 60128` model.
+   API key with access to the `doubao-seedream-4-0-250828` model.
 2. Copy the key into `.env` as `ARK_API_KEY=ark-...`.
 3. (Optional) Override the model id with `ARK_MODEL=...` in `.env`.
 4. Restart the bot: `docker compose restart bot`.

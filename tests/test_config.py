@@ -84,7 +84,7 @@ def test_config_ark_model_default(monkeypatch):
     monkeypatch.setenv("ARK_API_KEY", "ark-test-key")
     monkeypatch.delenv("ARK_MODEL", raising=False)
     cfg = Config.from_env()
-    assert cfg.ark_model == "doubao-seedream-5-0-2 60128"
+    assert cfg.ark_model == "doubao-seedream-4-0-250828"
 
 
 def test_config_ark_model_override(monkeypatch):
@@ -93,6 +93,6 @@ def test_config_ark_model_override(monkeypatch):
     monkeypatch.setenv("FEISHU_APP_ID", "cli_x")
     monkeypatch.setenv("FEISHU_APP_SECRET", "secret")
     monkeypatch.setenv("ARK_API_KEY", "ark-test-key")
-    monkeypatch.setenv("ARK_MODEL", "doubao-seedream-5-0-2 60128-prod")
+    monkeypatch.setenv("ARK_MODEL", "doubao-seedream-4-0-250828-prod")
     cfg = Config.from_env()
-    assert cfg.ark_model == "doubao-seedream-5-0-2 60128-prod"
+    assert cfg.ark_model == "doubao-seedream-4-0-250828-prod"

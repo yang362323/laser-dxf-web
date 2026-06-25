@@ -45,7 +45,7 @@ def settings() -> Config:
         convert_timeout_s=60,
         max_workers=3,
         ark_api_key="ark-test",
-        ark_model="doubao-seedream-5-0-2 60128",
+        ark_model="doubao-seedream-4-0-250828",
     )
 
 

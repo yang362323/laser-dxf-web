@@ -14,7 +14,7 @@ services:
       - .env
     environment:
       ARK_API_KEY: ${ARK_API_KEY:?ARK_API_KEY is required}
-      ARK_MODEL: ${ARK_MODEL:-doubao-seedream-5-0-2 60128}
+      ARK_MODEL: ${ARK_MODEL:-doubao-seedream-4-0-250828}
     ports:
       - "8080:8080"
     healthcheck:

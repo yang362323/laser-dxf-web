@@ -128,20 +128,30 @@ def _call_once(
     prompt: str,
     image_bytes: bytes,
 ) -> bytes:
-    """One SDK call. Returns the cleaned PNG bytes.
+    """One SDK call. Returns the cleaned image re-encoded as PNG.
 
     Raises DoubaoAPIError (terminal) for malformed responses. Propagates
     openai.* exceptions untouched so the caller (run) can classify and
     decide whether to retry.
+
+    Notes on the Ark API:
+    - openai >= 2.0's typed `images.generate` does not accept `image` as
+      a kwarg (it is text-to-image only). To call Ark's image-to-image
+      endpoint we pass `image` through `extra_body` so the SDK forwards
+      it verbatim in the JSON request body.
+    - Ark rejects `size="auto"`. Accepted values are `'1k' | '2k' | '4k'`
+      or `'WIDTHxHEIGHT'`. We default to `'2k'`.
+    - Ark returns the image in JPEG (not PNG). We re-encode as PNG to
+      keep a single byte format downstream.
     """
     b64 = base64.b64encode(image_bytes).decode()
     data_url = f"data:image/png;base64,{b64}"
     resp = client.images.generate(
         model=model,
         prompt=prompt,
-        image=[data_url],
-        size="auto",
+        size="2k",
         response_format="b64_json",
+        extra_body={"image": [data_url]},
     )
     item = resp.data[0]
     out_b64 = getattr(item, "b64_json", None)
@@ -151,11 +161,20 @@ def _call_once(
             internal_msg="doubao response had no b64_json",
         )
     decoded = base64.b64decode(out_b64)
-    # Cheap sanity check: PNG header
-    if decoded[:4] != b"\x89PNG":
+    # Re-encode as PNG so callers (Feishu upload, on-disk .png, DXF
+    # converter) see one consistent format. Pillow is the cheapest way
+    # to validate that the bytes are a real image.
+    try:
+        with Image.open(io.BytesIO(decoded)) as img:
+            img.load()
+            img = img.convert("RGBA") if img.mode in ("RGBA", "LA", "P") else img.convert("RGB")
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            return buf.getvalue()
+    except (Image.UnidentifiedImageError, OSError, ValueError) as e:
         raise DoubaoAPIError(
             user_msg="返回数据异常",
-            internal_msg="doubao b64 decoded to non-PNG bytes",
+            internal_msg=f"doubao response is not a valid image: {e}",
         )
     return decoded
 

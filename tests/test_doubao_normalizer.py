@@ -127,7 +127,7 @@ def test_call_once_returns_decoded_bytes():
 
     out = _call_once(
         client=client,
-        model="doubao-seedream-5-0-2 60128",
+        model="doubao-seedream-4-0-250828",
         prompt="do the thing",
         image_bytes=b"original",
     )
@@ -150,8 +150,15 @@ def test_call_once_sends_image_as_data_url():
     kwargs = client.images.generate.call_args.kwargs
     assert kwargs["model"] == "m"
     assert kwargs["prompt"] == "p"
-    assert isinstance(kwargs["image"], list) and len(kwargs["image"]) == 1
-    sent = kwargs["image"][0]
+    assert kwargs["size"] == "2k"
+    assert kwargs["response_format"] == "b64_json"
+    # The input image is passed via extra_body (not as a typed kwarg) so
+    # openai >= 2.0's strict signature doesn't reject it.
+    assert "image" not in kwargs
+    assert isinstance(kwargs["extra_body"], dict)
+    sent_list = kwargs["extra_body"]["image"]
+    assert isinstance(sent_list, list) and len(sent_list) == 1
+    sent = sent_list[0]
     assert sent.startswith("data:image/png;base64,")
     # Round-trip the base64 portion back to bytes
     payload = sent.split(",", 1)[1]
@@ -188,7 +195,9 @@ def test_call_once_raises_on_garbage_b64():
 
 
 def _valid_png_b64() -> str:
-    return base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"x" * 16).decode()
+    # Must be a real, complete PNG so the mocked response survives the
+    # re-encode step in _call_once (Pillow needs a parseable image).
+    return base64.b64encode(_make_png_bytes(8, 8)).decode()
 
 
 def _ok_response() -> MagicMock:
@@ -238,7 +247,7 @@ def test_run_resizes_input_before_calling_sdk(tmp_path):
     )
     # The bytes sent to Ark should be a resized PNG, <= 2048 on long edge
     kwargs = client.images.generate.call_args.kwargs
-    sent = kwargs["image"][0]
+    sent = kwargs["extra_body"]["image"][0]
     payload = base64.b64decode(sent.split(",", 1)[1])
     img = Image.open(io.BytesIO(payload))
     assert max(img.size) <= 2048
@@ -258,7 +267,7 @@ def test_run_does_not_resize_when_under_limit(tmp_path):
         client=client,
     )
     kwargs = client.images.generate.call_args.kwargs
-    sent = kwargs["image"][0]
+    sent = kwargs["extra_body"]["image"][0]
     payload = base64.b64decode(sent.split(",", 1)[1])
     assert payload == small  # bytes unchanged
 

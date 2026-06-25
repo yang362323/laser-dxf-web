@@ -10,7 +10,7 @@ class ConfigError(RuntimeError):
     """Raised when required configuration is missing or invalid."""
 
 
-DEFAULT_ARK_MODEL: str = "doubao-seedream-5-0-2 60128"
+DEFAULT_ARK_MODEL: str = "doubao-seedream-4-0-250828"
 
 
 @dataclass(frozen=True)
