@@ -69,7 +69,13 @@ def _make_message_handler(cfg: Config, feishu: FeishuClient, executor: ThreadPoo
             return
 
         work_dir = make_work_dir(Path(cfg.work_dir))
-        executor.submit(handle_dxf_request, parsed=parsed, feishu=feishu, work_dir=work_dir)
+        executor.submit(
+            handle_dxf_request,
+            parsed=parsed,
+            feishu=feishu,
+            work_dir=work_dir,
+            settings=cfg,
+        )
         log.info(
             "scheduled /dxf conversion: image_key=%s chat=%s msg=%s",
             parsed.image_key,

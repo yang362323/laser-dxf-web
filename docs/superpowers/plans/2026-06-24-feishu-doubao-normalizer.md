@@ -151,8 +151,8 @@ expected behaviour of the pipeline.
 from __future__ import annotations
 
 DEFAULT_PROMPT: str = (
-    "先提高图片清晰度，把图片的logo摆正，"
-    "图片中的logo改为纯黑色，然后背景改成纯白。"
+    "先提高图片清晰度，把图片的 logo 摆正，"
+    "图片中的 logo 改为纯黑色，然后背景改成纯白。"
 )
 ```
 
@@ -448,9 +448,10 @@ def test_resize_scales_down_when_over_limit():
     original = _make_png_bytes(5000, 3000)
     out = _resize_if_needed(original)
     img = Image.open(io.BytesIO(out))
+    # Long edge must be at the cap; aspect ratio must be preserved.
+    # Pillow's thumbnail() rounds rather than floors, so 5000x3000 -> 2048x1229.
     assert max(img.size) == MAX_LONG_EDGE
-    # Aspect ratio preserved: 5000x3000 -> 2048x1228 (floor of 3000*2048/5000)
-    assert img.size == (2048, 1228)
+    assert img.size == (2048, 1229)
 
 
 def test_resize_returns_png_bytes():
@@ -539,23 +540,23 @@ git commit -m "feat(doubao): add _resize_if_needed with Pillow downscale"
 Append to `tests/test_doubao_normalizer.py`:
 
 ```python
+import httpx
 from openai import APIConnectionError, APIStatusError
 
 from app.doubao_normalizer import _classify_error
 
 
 def _make_status_error(status: int, code: str | None = None) -> APIStatusError:
-    """Build an APIStatusError suitable for testing _classify_error."""
-    fake_response = type("R", (), {"status_code": status, "headers": {}})()
-    err = APIStatusError(
-        message="boom",
-        request_id="req_1",
-        body=None,
-    )
-    err.status_code = status
-    if code is not None:
-        err.code = code
-    return err
+    """Build an APIStatusError suitable for testing _classify_error.
+
+    openai >= 2.0 changed the APIStatusError constructor to require a real
+    httpx.Response and a body dict. We construct both here so the SDK can
+    extract `status_code` from the response and `code` from the body.
+    """
+    fake_request = httpx.Request("POST", "https://example.com/v1/images/generations")
+    fake_response = httpx.Response(status_code=status, headers={}, request=fake_request)
+    body = {"code": code} if code is not None else None
+    return APIStatusError(message="boom", response=fake_response, body=body)
 
 
 def test_classify_connection_error_is_retryable():
@@ -686,7 +687,10 @@ def _fake_b64_response(b64_png: str) -> MagicMock:
 
 
 def test_call_once_returns_decoded_bytes():
-    b64 = base64.b64encode(b"fakepng").decode()
+    # The implementation verifies the returned bytes are PNG; we must hand it
+    # a real PNG payload for the success path.
+    fake_png = _make_png_bytes(8, 8)
+    b64 = base64.b64encode(fake_png).decode()
     client = MagicMock(spec=OpenAI)
     client.images.generate.return_value = _fake_b64_response(b64)
 
@@ -696,11 +700,12 @@ def test_call_once_returns_decoded_bytes():
         prompt="do the thing",
         image_bytes=b"original",
     )
-    assert out == b"fakepng"
+    assert out == fake_png
 
 
 def test_call_once_sends_image_as_data_url():
-    b64 = base64.b64encode(b"fakepng").decode()
+    fake_png = _make_png_bytes(8, 8)
+    b64 = base64.b64encode(fake_png).decode()
     client = MagicMock(spec=OpenAI)
     client.images.generate.return_value = _fake_b64_response(b64)
 

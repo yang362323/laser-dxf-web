@@ -95,7 +95,7 @@ def test_send_post_message_with_image_and_file(feishu, fake_lark, mocker):
         receive_id="oc_chat_1",
         receive_id_type="chat_id",
         text="转换成功 (12 个轮廓)",
-        image_key="img_xyz",
+        image_keys=["img_xyz"],
         file_key="file_abc",
     )
     fake_lark.im.v1.message.create.assert_called_once()
@@ -124,3 +124,46 @@ def test_send_post_message_without_preview(feishu, fake_lark, mocker):
     flat = json.dumps(content, ensure_ascii=False)
     assert "file_abc" in flat
     assert "img_" not in flat
+
+
+def test_send_post_message_with_two_images(mocker):
+    from app.feishu_client import FeishuClient
+
+    fake_lark = mocker.MagicMock()
+    fake_lark.im.v1.message.create.return_value = mocker.MagicMock(success=lambda: True)
+    client = FeishuClient(fake_lark)
+
+    client.send_post_message(
+        receive_id="oc_chat",
+        receive_id_type="chat_id",
+        text="done",
+        image_keys=["img_cleaned", "img_preview"],
+        file_key="file_dxf",
+    )
+    fake_lark.im.v1.message.create.assert_called_once()
+    # Verify both image_keys made it into the JSON content
+    req = fake_lark.im.v1.message.create.call_args.args[0]
+    body = req.request_body
+    # The body holds the JSON string under .content
+    import json as _json
+    content = _json.loads(body.content)
+    paragraphs = content["zh_cn"]["content"]
+    # Expect: [[text], [img cleaned], [img preview], [media dxf]]
+    img_paragraphs = [p for p in paragraphs if p and p[0].get("tag") == "img"]
+    img_keys = [p[0]["image_key"] for p in img_paragraphs]
+    assert img_keys == ["img_cleaned", "img_preview"]
+
+
+def test_upload_image_bytes_returns_image_key(mocker):
+    from app.feishu_client import FeishuClient
+
+    fake_lark = mocker.MagicMock()
+    fake_lark.im.v1.image.create.return_value = mocker.MagicMock(
+        success=lambda: True,
+        data=mocker.MagicMock(image_key="img_v2_cleaned"),
+    )
+    client = FeishuClient(fake_lark)
+    key = client.upload_image_bytes(b"\x89PNG\r\n\x1a\nfakepng", ".png")
+    assert key == "img_v2_cleaned"
+    # Verify the SDK was called with a BytesIO-like body
+    fake_lark.im.v1.image.create.assert_called_once()

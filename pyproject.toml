@@ -13,6 +13,7 @@ dependencies = [
     "lark-oapi>=1.2",
     "matplotlib>=3.8",
     "Pillow>=10.0",
+    "openai>=1.40",
 ]
 
 [project.optional-dependencies]
