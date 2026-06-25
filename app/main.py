@@ -17,7 +17,7 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse
 
 from .config import Config
-from . import converter, doubao_normalizer, doubao_prompt, preview, skew_correction
+from . import converter, doubao_normalizer, doubao_prompt, preview
 from .doubao_normalizer import DoubaoAPIError
 
 log = logging.getLogger(__name__)
@@ -89,8 +89,6 @@ def _build_app(cfg: Config, executor: ThreadPoolExecutor) -> FastAPI:
             "preview_url": f"/api/output/{job_id}/preview.png",
             "dxf_url": f"/api/output/{job_id}/output.dxf",
             "shape_count": result["shape_count"],
-            "skew_corrected": result["skew_corrected"],
-            "skew_angle": result["skew_angle"],
         }
 
     # ── serve output files ─────────────────────────────────────────────
@@ -119,13 +117,7 @@ def _process_image(
     """Run the full image-to-DXF pipeline, save results to job_dir."""
     t0 = time.monotonic()
 
-    # 1. Skew correction
-    skew = skew_correction.correct(image_bytes)
-    if skew.was_corrected:
-        log.info("skew corrected: %.1f°", skew.angle_deg)
-        image_bytes = skew.corrected_bytes
-
-    # 2. Doubao normalization
+    # 1. Doubao AI normalization (straighten + clarity + black logo + white bg)
     normalized = doubao_normalizer.run(
         image_bytes=image_bytes,
         prompt=doubao_prompt.DEFAULT_PROMPT,
@@ -134,7 +126,7 @@ def _process_image(
         model=ark_model,
     )
 
-    # 3. DXF conversion
+    # 2. DXF conversion
     conv = converter.run(
         image_bytes=normalized.cleaned_bytes,
         image_suffix=".png",
@@ -142,7 +134,7 @@ def _process_image(
         work_dir=job_dir,
     )
 
-    # 4. Preview
+    # 3. Preview
     try:
         preview_path = preview.render(conv.dxf_path, job_dir / "preview.png")
     except Exception:
@@ -157,8 +149,6 @@ def _process_image(
 
     return {
         "shape_count": conv.shape_count,
-        "skew_corrected": skew.was_corrected,
-        "skew_angle": skew.angle_deg,
     }
 
 

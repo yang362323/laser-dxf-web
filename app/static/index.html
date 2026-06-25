@@ -118,7 +118,7 @@ async function convert(file) {
     if (!resp.ok) { const d = await resp.json(); throw new Error(d.detail || '转换失败'); }
     const data = await resp.json();
     previewImg.src = data.preview_url;
-    resultInfo.textContent = `转换成功 · ${data.shape_count} 个轮廓` + (data.skew_corrected ? ` · 已纠偏 ${data.skew_angle.toFixed(1)}°` : '');
+    resultInfo.textContent = `转换成功 · ${data.shape_count} 个轮廓`;
     btnDownload.href = data.dxf_url;
     btnDownload.download = 'output.dxf';
     btnShare.onclick = () => shareFile(data);
