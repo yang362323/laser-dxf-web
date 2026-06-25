@@ -214,10 +214,14 @@ class ClawBotClient:
         t.start()
 
     def _run(self):
-        try:
-            self._token, self._uin, self._aes_key = _login(self._http)
-        except Exception:
-            log.exception("clawbot login failed")
+        while self._running:
+            try:
+                self._token, self._uin, self._aes_key = _login(self._http)
+                break
+            except Exception:
+                log.exception("clawbot login failed, retrying in 10s")
+                time.sleep(10)
+        else:
             return
         log.info("clawbot polling...")
         while self._running:
